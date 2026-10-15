@@ -247,6 +247,137 @@ def test_concurrency_punch_in():
     assert count_201 == 1, f"Expected exactly one 201, got {count_201} in {results}"
     assert count_409 == 7, f"Expected seven 409s, got {count_409} in {results}"
 
+def test_grace_period_and_overtime_exact_boundaries():
+    emp_code = "EMP9906"
+    db.employees.delete_one({"emp_code": emp_code})
+    db.attendance_logs.delete_many({"emp_code": emp_code})
+
+    client.post("/employees", json={
+        "emp_code": emp_code, "name": "Boundary Tester", "email": "bound@example.com",
+        "department": "QA", "shift_start": "09:30", "shift_end": "18:30", "joined_on": "2026-01-01"
+    })
+
+    # Exact 10:00 grace boundary: 09:40:00 IST -> late_minutes = 0
+    t_094000 = int(datetime(2026, 8, 3, 4, 10, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    r1 = client.post("/attendance/punch-in", json={"emp_code": emp_code, "punched_at": t_094000})
+    assert r1.status_code == 201
+    assert r1.json()["late_minutes"] == 0
+
+    # Overtime boundary: 29 minutes -> 0 overtime
+    t_185900 = int(datetime(2026, 8, 3, 13, 29, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    r_out1 = client.post("/attendance/punch-out", json={"emp_code": emp_code, "punched_at": t_185900})
+    assert r_out1.status_code == 200
+    assert r_out1.json()["overtime_minutes"] == 0
+
+    # Next day: 09:40:01 IST -> strictly > 10:00 grace -> late_minutes = 10
+    t_094001 = int(datetime(2026, 8, 4, 4, 10, 1, tzinfo=timezone.utc).timestamp() * 1000)
+    r2 = client.post("/attendance/punch-in", json={"emp_code": emp_code, "punched_at": t_094001})
+    assert r2.status_code == 201
+    assert r2.json()["late_minutes"] == 10
+
+    # Overtime boundary: exact 30 minutes -> 30 overtime
+    t_190000 = int(datetime(2026, 8, 4, 13, 30, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    r_out2 = client.post("/attendance/punch-out", json={"emp_code": emp_code, "punched_at": t_190000})
+    assert r_out2.status_code == 200
+    assert r_out2.json()["overtime_minutes"] == 30
+
+    # Half day boundary: punch in 09:30, punch out 13:58 (4h 28m = 4.47 hours < 4.50) -> half_day = True
+    t_093000 = int(datetime(2026, 8, 5, 4, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    r3 = client.post("/attendance/punch-in", json={"emp_code": emp_code, "punched_at": t_093000})
+    assert r3.status_code == 201
+    t_135800 = int(datetime(2026, 8, 5, 8, 28, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    r_out3 = client.post("/attendance/punch-out", json={"emp_code": emp_code, "punched_at": t_135800})
+    assert r_out3.status_code == 200
+    assert r_out3.json()["work_hours"] == 4.47
+    assert r_out3.json()["half_day"] is True
+
+def test_mid_month_joiner_working_days():
+    emp_code = "EMP9907"
+    db.employees.delete_one({"emp_code": emp_code})
+    # Joins on 2026-07-20 (Monday) -> Exactly 10 working weekdays in July 2026
+    client.post("/employees", json={
+        "emp_code": emp_code, "name": "Mid Month Joiner", "email": "joiner@example.com",
+        "department": "Engineering", "joined_on": "2026-07-20"
+    })
+
+    res = client.get(f"/analytics/employees/{emp_code}/monthly?month=2026-07")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["working_days"] == 10, f"Expected 10 working days, got {data['working_days']}"
+
+def test_regularize_status_transitions():
+    emp_code = "EMP9901"
+    # Ensure there is a record on 2026-07-06
+    rec = db.attendance_logs.find_one({"emp_code": emp_code, "date": "2026-07-06"})
+    assert rec is not None
+
+    # 1. Changing to LEAVE must nullify punches and zero derived fields
+    patch_leave = {
+        "status": "LEAVE",
+        "reason": "Applied medical leave post-facto",
+        "regularized_by": "hr.lead"
+    }
+    res_l = client.patch(f"/attendance/{emp_code}/2026-07-06", json=patch_leave)
+    assert res_l.status_code == 200, res_l.text
+    d_l = res_l.json()
+    assert d_l["status"] == "LEAVE"
+    assert d_l["punch_in"] is None
+    assert d_l["punch_out"] is None
+    assert d_l["work_hours"] is None
+    assert d_l["late_minutes"] == 0
+    assert d_l["overtime_minutes"] == 0
+    assert d_l["half_day"] is False
+
+    # 2. Supplying punch times when setting to LEAVE -> 422
+    patch_bad = {
+        "status": "LEAVE",
+        "punch_in": 1783311001000,
+        "reason": "Invalid punch with leave",
+        "regularized_by": "hr.lead"
+    }
+    res_bad = client.patch(f"/attendance/{emp_code}/2026-07-06", json=patch_bad)
+    assert res_bad.status_code == 422
+
+    # 3. Request that changes nothing -> 422
+    res_noop = client.patch(f"/attendance/{emp_code}/2026-07-06", json=patch_leave)
+    assert res_noop.status_code == 422
+
+def test_concurrency_punch_out():
+    emp_code = "EMP9908"
+    db.employees.delete_one({"emp_code": emp_code})
+    db.attendance_logs.delete_many({"emp_code": emp_code})
+
+    client.post("/employees", json={
+        "emp_code": emp_code, "name": "Conc Out Tester", "email": "cout@example.com",
+        "department": "QA", "shift_start": "09:30", "shift_end": "18:30", "joined_on": "2026-01-01"
+    })
+
+    in_ms = int(datetime(2026, 8, 10, 4, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    client.post("/attendance/punch-in", json={"emp_code": emp_code, "punched_at": in_ms})
+
+    out_ms = int(datetime(2026, 8, 10, 13, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    results = []
+
+    def do_out():
+        r = client.post("/attendance/punch-out", json={"emp_code": emp_code, "punched_at": out_ms})
+        results.append(r.status_code)
+
+    threads = [threading.Thread(target=do_out) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results.count(200) == 1, f"Expected 1 200, got {results}"
+    assert results.count(409) == 5, f"Expected 5 409s, got {results}"
+
+def test_explain_ixscan_verification():
+    res = client.get("/admin/explain/attendance_list?emp_code=EMP0001")
+    assert res.status_code == 200
+    explain_json = str(res.json()["explain"])
+    # Verify IXSCAN appears in the execution stats / query plan
+    assert "IXSCAN" in explain_json, "Expected index scan IXSCAN in explain plan"
+
 if __name__ == "__main__":
     setup_module()
     test_health()
@@ -259,6 +390,12 @@ if __name__ == "__main__":
     print("Overnight shift passed!")
     test_regularize_patch()
     print("Regularize patch passed!")
+    test_grace_period_and_overtime_exact_boundaries()
+    print("Exact grace and overtime boundaries passed!")
+    test_mid_month_joiner_working_days()
+    print("Mid-month joiner working days passed!")
+    test_regularize_status_transitions()
+    print("Regularize status transitions passed!")
     test_analytics_employee_monthly()
     print("Employee monthly analytics passed!")
     test_analytics_department_summary()
@@ -269,6 +406,11 @@ if __name__ == "__main__":
     print("Department trend passed!")
     test_explain_endpoints()
     print("Explain endpoints passed!")
+    test_explain_ixscan_verification()
+    print("Explain IXSCAN verification passed!")
     test_concurrency_punch_in()
-    print("Concurrency test passed!")
+    print("Concurrency punch-in test passed!")
+    test_concurrency_punch_out()
+    print("Concurrency punch-out test passed!")
     print("\n>>> ALL TESTS PASSED WITH 100% SUCCESS! <<<")
+
