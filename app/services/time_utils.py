@@ -4,7 +4,7 @@ from typing import Optional
 
 
 def round_half_up(val: float | Decimal | None, decimals: int = 2) -> Optional[float]:
-    """Round a number using standard half-up rounding (R8)."""
+    """Rounds a number using standard half-up rounding rather than round-to-even."""
     if val is None:
         return None
     d = Decimal(str(val))
@@ -13,25 +13,25 @@ def round_half_up(val: float | Decimal | None, decimals: int = 2) -> Optional[fl
 
 
 def truncate_millis_to_seconds(ms: int) -> int:
-    """Truncate epoch milliseconds to whole seconds (R1)."""
+    """Truncates epoch milliseconds to whole seconds."""
     return (ms // 1000) * 1000
 
 
 def ms_to_datetime_utc(ms: int) -> datetime:
-    """Convert truncated epoch milliseconds to a UTC timezone-aware datetime."""
+    """Converts epoch milliseconds to a UTC datetime."""
     sec = ms // 1000
     return datetime.fromtimestamp(sec, tz=timezone.utc)
 
 
 def datetime_to_ms(dt: Optional[datetime]) -> Optional[int]:
-    """Convert a datetime to epoch milliseconds."""
+    """Converts a datetime to epoch milliseconds."""
     if dt is None:
         return None
     return int(dt.timestamp() * 1000)
 
 
 def get_month_date_range(month_str: str) -> tuple[date, date]:
-    """Return start date and end date for a YYYY-MM string."""
+    """Returns start and end dates for a given month string (YYYY-MM)."""
     y, m = map(int, month_str.split("-"))
     start_d = date(y, m, 1)
     if m == 12:
@@ -42,10 +42,7 @@ def get_month_date_range(month_str: str) -> tuple[date, date]:
 
 
 def count_working_days(joined_on_str: str, month_str: str) -> int:
-    """
-    R7: Working days.
-    Monday-Friday, counted from joined_on for mid-month joiners.
-    """
+    """Counts Monday-Friday working days in the month, starting from joined_on if joined mid-month."""
     month_start, month_end = get_month_date_range(month_str)
     joined_d = date.fromisoformat(joined_on_str)
     eff_start = max(month_start, joined_d)

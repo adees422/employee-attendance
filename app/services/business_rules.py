@@ -6,13 +6,7 @@ from app.services.time_utils import ms_to_datetime_utc, round_half_up
 
 
 def compute_attendance_date(shift_start: str, shift_end: str, punch_in_ms: int) -> str:
-    """
-    R1: Time zone and attendance date.
-    Shift times and attendance dates are IST (UTC+05:30).
-    A record's date is the IST calendar date of its punch_in instant.
-    Overnight shifts (shift_end <= shift_start): a punch-in whose IST time
-    is strictly earlier than shift_end belongs to the shift that started the previous day.
-    """
+    """Returns the IST attendance date, adjusting for overnight shifts starting the previous day."""
     dt_utc = ms_to_datetime_utc(punch_in_ms)
     dt_ist = dt_utc.astimezone(IST)
 
@@ -26,11 +20,7 @@ def compute_attendance_date(shift_start: str, shift_end: str, punch_in_ms: int) 
 
 
 def compute_late_minutes(shift_start: str, attendance_date_str: str, punch_in_dt: Optional[datetime]) -> int:
-    """
-    R2: Late.
-    Grace period is 10 minutes. Late only if punch-in is strictly more than 10:00
-    after shift_start; then late_minutes = whole minutes (floor) since shift_start.
-    """
+    """Calculates late minutes after a 10-minute grace period from shift start."""
     if not punch_in_dt:
         return 0
 
@@ -40,18 +30,13 @@ def compute_late_minutes(shift_start: str, attendance_date_str: str, punch_in_dt
     start_dt_ist = datetime(y, m, d, sh, sm, 0, tzinfo=IST)
 
     diff_seconds = (punch_in_ist - start_dt_ist).total_seconds()
-    # Grace period: strictly more than 10:00 (600 seconds)
     if diff_seconds > 600:
         return int(diff_seconds // 60)
     return 0
 
 
 def compute_overtime(shift_start: str, shift_end: str, attendance_date_str: str, punch_out_dt: Optional[datetime]) -> int:
-    """
-    R3: Overtime.
-    Whole minutes (floor) between shift_end and punch_out, counted only when >= 30; otherwise 0.
-    For overnight shifts (shift_end <= shift_start), shift_end falls on next calendar day.
-    """
+    """Calculates overtime minutes past shift end if minimum 30-minute threshold is met."""
     if not punch_out_dt:
         return 0
 
@@ -71,10 +56,7 @@ def compute_overtime(shift_start: str, shift_end: str, attendance_date_str: str,
 
 
 def compute_work_hours(punch_in_dt: Optional[datetime], punch_out_dt: Optional[datetime]) -> Optional[float]:
-    """
-    R4: Work hours.
-    (punch_out - punch_in) in seconds / 3600, rounded to 2 decimals half-up.
-    """
+    """Calculates duration between punch-in and punch-out in hours, rounded to 2 decimals half-up."""
     if punch_in_dt is None or punch_out_dt is None:
         return None
     sec = Decimal(str(int((punch_out_dt - punch_in_dt).total_seconds())))
@@ -84,10 +66,8 @@ def compute_work_hours(punch_in_dt: Optional[datetime], punch_out_dt: Optional[d
 
 
 def is_half_day(work_hours: Optional[float]) -> bool:
-    """
-    R5: Half day.
-    After punch-out, half_day is true when the rounded work_hours < 4.50.
-    """
+    """Returns True if work hours are under the 4.5 hour threshold."""
     if work_hours is None:
         return False
     return work_hours < 4.50
+

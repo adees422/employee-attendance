@@ -1,13 +1,7 @@
 """
 Employee Attendance & Analytics API
 
-Run:  uvicorn app.main:app --port 8000
-Env:  MONGO_URI, MONGO_DB (a local .env is loaded for convenience)
-
-Adhering strictly to:
-- PROBLEM_STATEMENT.docx
-- openapi.yaml (Contract v2.0.0, Business Rules R1-R10)
-- DATA_MODEL.md (Extended JSON schemas, stored derived values)
+Run: uvicorn app.main:app --port 8000
 """
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
